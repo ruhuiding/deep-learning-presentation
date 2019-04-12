@@ -1,0 +1,410 @@
+---
+title: "Deep learning presentation"
+author: "Group 8"
+date: ''
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preparing the data
+
+```{r}
+#install.packages("quantmod")
+library(quantmod)
+## This only loads the data the first time you run it.
+if (!exists("crypto")) {
+    crypto <- read.csv(unzip("Cryptocurrency.zip"), stringsAsFactors=FALSE)
+}
+output.date <- "2018-11-29"
+input.first.date <- "2018-11-01"
+input.last.date <- "2018-11-28"
+
+## Get a range of dates.
+input.dates <- sort(unique(crypto$date[ crypto$date >= input.first.date & crypto$date <= input.last.date ]))
+
+## Get the coins available on every date.
+input.coins.count <- table(crypto$slug[crypto$date %in% input.dates])
+input.coins <- names( input.coins.count[input.coins.count == length(input.dates)] )
+    
+## Function to get all coins available on every date.
+get.cross.section <- function (coins, dates) {
+    result <- matrix(nrow=length(coins), ncol=length(dates))
+
+    for (i in 1:length(coins)) {
+        result[i, ] = crypto[crypto$slug == coins[i] & crypto$date %in% dates, "close"]
+    }
+    result
+}
+
+## This function is very slow, so we try not to run it twice.
+if (!exists("x.data") || !exists("y.data")) {
+    x.data <- get.cross.section(input.coins, input.dates)
+    y.data <- get.cross.section(input.coins, output.date)
+}
+
+# returns
+x.data2 = t(apply(x.data,1,Delt))
+x.data2 <- x.data2[,-1]
+y.data2 = (y.data-x.data[,28])/x.data[,28]
+
+# rename the columns and rows
+rownames(x.data2)<-input.coins
+colnames(x.data2)<-input.dates[-1]
+rownames(y.data2)<-input.coins
+colnames(y.data2)<-output.date
+
+## choose where to split the data
+train.split <- floor(nrow(x.data2) * 0.8)
+x.train <- x.data2[1:train.split, ]
+y.train <- y.data2[1:train.split, ]
+x.test <- x.data2[-(1:train.split),]
+y.test <- y.data2[-(1:train.split),]
+
+```
+
+# Baseline: Naive
+```{r}
+library(keras)
+naive <- x.data[,28]
+preds <- cbind(y.data,naive)
+colnames(preds)<-c("actual","naive")
+head(preds)
+
+```
+
+
+
+## model1: regression
+```{r}
+use_session_with_seed(1)
+
+model <- keras_model_sequential()
+
+model %>%
+    layer_dense(units=1) %>%
+    compile(loss="mse", 
+            optimizer="adam")
+
+history = model %>% fit(x.train, y.train, epochs=100, 
+                        validation_split = 0.2,
+                        verbose=0)
+plot(history)
+print(model %>% evaluate(x.test, y.test))
+which.min(history$metrics$val_loss)
+min(history$metrics$val_loss)
+# based on the best epoch
+model <- keras_model_sequential()
+
+model %>%
+    layer_dense(units=1) %>%
+    compile(loss="mse", 
+            optimizer="adam")
+
+model %>% fit(x.train, y.train, epochs=which.min(history$metrics$val_loss), 
+                        validation_split = 0.2,
+                        verbose=0)
+pred1 <- model %>% predict(x.data2)
+colnames(pred1) <-"model1"
+preds <- cbind(y.data,naive,naive*(1+pred1))
+head(preds)
+
+```
+
+## Model 2: one hidden layer
+
+
+```{r}
+## We use a list to keep track of the models and history.
+use_session_with_seed(1)
+models <- list()
+histories <- list()
+
+fit.train <- function (model, epochs=100) {
+  model %>% fit(x.train, y.train, epochs=epochs,
+                validation_split=0.2,verbose=0)
+}
+
+best.one <- function (history) {
+  c(val_mse=min(history$metrics$val_loss), 
+    epoch=which.min(history$metrics$val_loss))
+}
+
+model.hidden <- function (width, regularizer) {
+  model <- keras_model_sequential()
+  model %>% layer_dense(units=width, activation="relu")
+  model %>% layer_dense(units = 1)
+  model %>% compile(loss = "mse",optimizer = "adam")
+  model
+}
+
+
+models$hidden1 <- model.hidden(10, NULL)
+models$hidden2 <- model.hidden(20, NULL)
+models$hidden3 <- model.hidden(40, NULL)
+models$hidden4 <- model.hidden(50, NULL)
+
+histories <- lapply(models, fit.train)
+result <- sapply(histories, best.one)
+result
+```
+
+
+### based on the result
+```{r}
+
+use_session_with_seed(1)
+model2 <- keras_model_sequential()
+model2 %>% 
+  layer_dense(units=40, activation="relu") %>% 
+  layer_dense(units = 1) %>% 
+  compile(loss = "mse",
+          optimizer="adam")
+
+history = model2 %>% fit(x.train, y.train, epochs=12, 
+                         validation_split = 0.2,verbose=0)
+plot(history)
+
+pred2 <- model2 %>% predict(x.data2)
+colnames(pred2) <-"model2"
+
+
+```
+## Model 3: two hidden layers
+
+
+```{r}
+## We use a list to keep track of the models and history.
+use_session_with_seed(1)
+
+model.hidden <- function (width2, regularizer) {
+  model <- keras_model_sequential()
+  model %>% layer_dense(units=40, activation="relu")
+  model %>% layer_dense(units=width2, activation="relu")
+  model %>% layer_dense(units = 1)
+  model %>% compile(loss = "mse",optimizer = "adam")
+  model
+}
+
+models$hidden1 <- model.hidden(20, NULL)
+models$hidden2 <- model.hidden(30, NULL)
+models$hidden3 <- model.hidden(40, NULL)
+models$hidden4 <- model.hidden(50, NULL)
+
+histories <- lapply(models, fit.train)
+result <- sapply(histories, best.one)
+result
+```
+
+
+
+```{r}
+use_session_with_seed(1)
+model3 <- keras_model_sequential()
+model3 %>% 
+  layer_dense(units=40, activation="relu") %>% 
+  layer_dense(units=30, activation="relu") %>% 
+  layer_dense(units = 1) %>% 
+  compile(loss = "mse",
+          optimizer="adam")
+
+history = model3 %>% fit(x.train, y.train, epochs=5, 
+                         validation_split = 0.2,verbose=0)
+plot(history)
+
+
+pred3 <- model3 %>% predict(x.data2)
+colnames(pred3) <-"model3"
+
+
+```
+
+## three hidden layers
+
+
+```{r}
+## We use a list to keep track of the models and history.
+use_session_with_seed(1)
+
+model.hidden <- function (width3, regularizer) {
+  model <- keras_model_sequential()
+  model %>% layer_dense(units=40, activation="relu")
+  model %>% layer_dense(units=30, activation="relu")
+  model %>% layer_dense(units=width3, activation="relu")
+  model %>% layer_dense(units = 1)
+  model %>% compile(loss = "mse",optimizer = "adam")
+  model
+}
+
+models$hidden1 <- model.hidden(20, NULL)
+models$hidden2 <- model.hidden(30, NULL)
+models$hidden3 <- model.hidden(40, NULL)
+models$hidden4 <- model.hidden(50, NULL)
+
+histories <- lapply(models, fit.train)
+result <- sapply(histories, best.one)
+result
+```
+
+
+
+## Model 4: regularizer
+
+Add the tested two hidden layers
+```{r}
+use_session_with_seed(1)
+models <- list()
+histories <- list()
+
+fit.train <- function (model, epochs=100) {
+  model %>% fit(x.train, y.train, epochs=epochs,
+                validation_split=0.2,verbose=0)
+}
+
+best.one <- function (history) {
+  c(val_mse=min(history$metrics$val_loss), 
+    epoch=which.min(history$metrics$val_loss))
+}
+
+model.hidden <- function (width, regularizer) {
+  model <- keras_model_sequential()
+  model %>% layer_dense(units=width, activation="relu")
+  model %>% layer_dense(units = 1)
+  model %>% compile(loss = "mse",optimizer = "adam")
+  model
+}
+
+
+model.regularized <- function (regularizer) {
+  model <- keras_model_sequential() 
+  model %>%   
+    layer_dense(units=40, activation="relu", kernel_regularizer = regularizer) %>% 
+    layer_dense(units=30, activation="relu", kernel_regularizer = regularizer) %>% 
+    layer_dense(units = 1, kernel_regularizer = regularizer)
+  model %>% compile(
+    loss = "mse",
+    optimizer = "adam"
+  )
+  model
+}
+
+
+models$lasso1 <- model.regularized(regularizer_l1(l=0.01))
+models$lasso2 <- model.regularized(regularizer_l1(l=0.05))
+models$lasso3 <- model.regularized(regularizer_l1(l=0.5))
+models$lasso4 <- model.regularized(regularizer_l1(l=10))
+
+models$ridge1 <- model.regularized(regularizer_l2(l=0.01))
+models$ridge2 <- model.regularized(regularizer_l2(l=0.05))
+models$ridge3 <- model.regularized(regularizer_l2(l=0.5))
+models$ridge4 <- model.regularized(regularizer_l2(l=10))
+
+models$net1 <- model.regularized( regularizer_l1_l2(0.01, 0.01))
+models$net2 <- model.regularized( regularizer_l1_l2(0.05, 0.05))
+models$net3 <- model.regularized( regularizer_l1_l2(0.5, 0.5))
+models$net4 <- model.regularized( regularizer_l1_l2(10, 10))
+
+
+histories <- lapply(models, fit.train)
+result <- sapply(histories, best.one)
+result
+```
+
+### Based on the result: ridge 3,epoch=45
+```{r}
+use_session_with_seed(1)
+model4 <- keras_model_sequential()
+model4 %>% 
+  layer_dense(units=40, activation="relu", kernel_regularizer = regularizer_l1(l=0.5)) %>% 
+  layer_dense(units=30, activation="relu", kernel_regularizer = regularizer_l1(l=0.5)) %>% 
+  layer_dense(units = 1, kernel_regularizer =regularizer_l1(l=0.5)) %>% 
+  compile(loss = "mse",
+          optimizer="adam")
+
+history = model4 %>% fit(x.train, y.train, epochs=45, 
+                         validation_split = 0.2,verbose=0)
+plot(history)
+print(model4 %>% evaluate(x.test, y.test))
+which.min(history$metrics$val_loss)
+
+pred4 <- model4 %>% predict(x.data2)
+colnames(pred4) <-"model4"
+preds <- cbind(y.data,naive,naive*(1+pred1),naive*(1+pred2),naive*(1+pred3),naive*(1+pred4))
+preds <- format(preds,scientific=F)
+preds <- format(preds,digits =4)
+head(preds)
+
+```
+
+
+## Results for various seeds
+```{r}
+## Model 1 (Original Model)
+result.mse=matrix(1:20,nrow=5)
+for(i in 1:5){
+  use_session_with_seed(i)
+  model1 <- keras_model_sequential()
+  model1 %>%
+    layer_dense(units=1) %>%
+    compile(loss="mse", optimizer="adam")
+  
+  history <- model1 %>% fit(x.train, y.train, epochs=100, validation_split = 0.2, verbose=0)
+  result.mse[i,1] = model1 %>% evaluate(x.test, y.test, verbose=0)
+}
+
+
+
+## Model 2
+for(i in 1:5){
+  use_session_with_seed(i)
+  model2 <- keras_model_sequential()
+  model2 %>%
+  layer_dense(units=40, activation="relu") %>% 
+  layer_dense(units = 1) %>% 
+  compile(loss = "mse",
+          optimizer="adam")
+  
+  model2 %>% fit(x.train, y.train, epochs=100, validation_split = 0.2, verbose=0)
+  result.mse[i,2] = model2 %>% evaluate(x.test, y.test, verbose=0)
+}
+
+rownames(result.mse) = c("seed 1:","seed 2:","seed 3:","seed 4:","seed 5:")
+
+## Model 3
+for(i in 1:5){
+  use_session_with_seed(i)
+  model3 <- keras_model_sequential()
+  model3 %>%
+  layer_dense(units=40, activation="relu") %>% 
+  layer_dense(units=30, activation="relu") %>% 
+  layer_dense(units = 1) %>% 
+  compile(loss = "mse",
+          optimizer="adam")
+  
+  model3 %>% fit(x.train, y.train, epochs=100, validation_split = 0.2, verbose=0)
+  result.mse[i,3] = model3 %>% evaluate(x.test, y.test, verbose=0)
+}
+
+## Model 4:
+for(i in 1:5){
+  use_session_with_seed(i)
+  model4 <- keras_model_sequential()
+  model4 %>%
+  layer_dense(units=40, activation="relu", kernel_regularizer = regularizer_l1(l=0.5)) %>% 
+  layer_dense(units=30, activation="relu", kernel_regularizer = regularizer_l1(l=0.5)) %>% 
+  layer_dense(units = 1, kernel_regularizer =regularizer_l1(l=0.5)) %>% 
+  compile(loss = "mse",
+          optimizer="adam")
+  
+model4 %>% fit(x.train, y.train, epochs=100, validation_split = 0.2, verbose=0)
+  result.mse[i,4] = model4 %>% evaluate(x.test, y.test, verbose=0)
+}
+result.mse
+rbind(result.mse,apply(result.mse,2,mean))
+
+```
+
